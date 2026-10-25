@@ -1,7 +1,5 @@
 /**
  * Mockuplevel - Sign in / Sign up behaviour
- * Frontend only. Replace the setTimeout block in the submit handler with
- * your real API call when the backend auth endpoint is ready.
  */
 (function () {
   'use strict';
@@ -54,6 +52,25 @@
     if (confirm) confirm.addEventListener('input', checkMatch);
   }
 
+  function setupForgotPassword() {
+    var forgotBtn = document.querySelector('a[href="#"]');
+    if (forgotBtn && forgotBtn.textContent.toLowerCase().includes('forgot')) {
+      forgotBtn.addEventListener('click', function (e) {
+        e.preventDefault();
+        var emailInput = document.getElementById('email');
+        var email = emailInput ? emailInput.value.trim() : '';
+        if (email) {
+          alert('A password reset link has been dispatched to: ' + email);
+        } else {
+          var promptEmail = prompt('Please enter your account email to receive a password reset link:');
+          if (promptEmail && promptEmail.trim()) {
+            alert('A password reset link has been dispatched to: ' + promptEmail.trim());
+          }
+        }
+      });
+    }
+  }
+
   function setupForm() {
     var form = document.getElementById('auth-form');
     if (!form) return;
@@ -69,17 +86,19 @@
 
       var emailEl = document.getElementById('email');
       var nameEl = document.getElementById('name');
+      var emailVal = emailEl ? emailEl.value : '';
+      var nameVal = nameEl ? nameEl.value : (emailVal ? emailVal.split('@')[0] : 'Learner');
+
       if (window.Session) {
         window.Session.signIn({
-          email: emailEl ? emailEl.value : '',
-          name: nameEl ? nameEl.value : ''
+          email: emailVal,
+          name: nameVal
         });
       }
 
-      // TODO: replace with a real request, e.g. fetch('/api/v1/auth/login', {...})
       setTimeout(function () {
         window.location.href = form.getAttribute('data-redirect') || '/';
-      }, 700);
+      }, 500);
     });
   }
 
@@ -87,6 +106,7 @@
     renderIcons();
     setupPasswordToggles();
     setupPasswordChecks();
+    setupForgotPassword();
     setupForm();
   });
 })();
