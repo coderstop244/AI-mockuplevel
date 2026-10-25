@@ -1,0 +1,122 @@
+/* Mockuplevel - Sign in / Sign up styles
+   Matches the look of style.css (dark, glass, indigo + cyan). Self-contained. */
+@import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+
+:root {
+  --font-sans: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  --bg: #090d16;
+  --indigo: #6366f1;
+  --cyan: #22d3ee;
+}
+
+.auth-body {
+  font-family: var(--font-sans);
+  color: #f1f5f9;
+  background-color: var(--bg);
+  background-image:
+    radial-gradient(60rem 30rem at 15% -10%, rgba(99, 102, 241, 0.18), transparent 60%),
+    radial-gradient(45rem 28rem at 100% 110%, rgba(34, 211, 238, 0.10), transparent 60%);
+  background-attachment: fixed;
+  overflow-x: hidden;
+}
+
+/* Card */
+.glass-panel {
+  background: rgba(15, 23, 42, 0.75);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* Inputs */
+.glass-input {
+  width: 100%;
+  background: rgba(15, 23, 42, 0.6);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  color: #f8fafc;
+  border-radius: 0.75rem;
+  padding: 0.75rem 1rem;
+  font-size: 0.875rem;
+  transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+}
+.glass-input::placeholder { color: #64748b; }
+.glass-input:focus {
+  outline: none;
+  border-color: var(--indigo);
+  box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.2);
+  background: rgba(15, 23, 42, 0.85);
+}
+.glass-input.has-icon-right { padding-right: 2.75rem; }
+
+.field-icon-btn {
+  position: absolute;
+  right: 0.5rem;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 2rem;
+  height: 2rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.5rem;
+  color: #94a3b8;
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+  transition: color 0.2s ease, background 0.2s ease;
+}
+.field-icon-btn:hover { color: #fff; background: rgba(148, 163, 184, 0.12); }
+
+/* Primary button */
+.btn-primary {
+  width: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 0.8rem 1rem;
+  border: 0;
+  border-radius: 0.75rem;
+  color: #fff;
+  font-weight: 600;
+  font-size: 0.875rem;
+  cursor: pointer;
+  background: linear-gradient(to right, #4f46e5, #6366f1);
+  box-shadow: 0 8px 20px -6px rgba(99, 102, 241, 0.45);
+  transition: filter 0.2s ease, transform 0.1s ease;
+}
+.btn-primary:hover { filter: brightness(1.12); }
+.btn-primary:active { transform: translateY(1px); }
+.btn-primary:disabled { opacity: 0.7; cursor: progress; }
+
+/* Keyboard focus */
+a:focus-visible,
+button:focus-visible,
+input[type="checkbox"]:focus-visible {
+  outline: 2px solid #a5b4fc;
+  outline-offset: 2px;
+}
+
+/* Password strength (sign up) */
+.strength { display: flex; gap: 0.375rem; margin-top: 0.5rem; }
+.strength span {
+  flex: 1;
+  height: 4px;
+  border-radius: 9999px;
+  background: rgba(148, 163, 184, 0.2);
+  transition: background 0.2s ease;
+}
+.strength[data-level="1"] span:nth-child(-n+1) { background: #f43f5e; }
+.strength[data-level="2"] span:nth-child(-n+2) { background: #f59e0b; }
+.strength[data-level="3"] span:nth-child(-n+3) { background: #10b981; }
+
+/* Browser autofill keeps the dark look */
+.glass-input:-webkit-autofill {
+  -webkit-text-fill-color: #f8fafc;
+  -webkit-box-shadow: 0 0 0 1000px #0f172a inset;
+  caret-color: #f8fafc;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; animation: none !important; }
+}

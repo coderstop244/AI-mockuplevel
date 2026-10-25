@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Sign in - Mockuplevel</title>
+
+  <!-- Tailwind CSS CDN (same as index.html) -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = { darkMode: 'class' };
+  </script>
+
+  <!-- Lucide Icons CDN (same as index.html) -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+
+  <!-- Auth styles -->
+  <link rel="stylesheet" href="/static/css/auth.css">
+</head>
+
+<body class="auth-body min-h-screen flex items-center justify-center p-4 antialiased selection:bg-indigo-500 selection:text-white">
+
+  <main class="w-full max-w-md">
+
+    <!-- Brand -->
+    <a href="/" class="flex items-center justify-center gap-3 mb-8">
+      <div class="w-10 h-10 rounded-xl bg-gradient-to-tr from-indigo-600 via-indigo-500 to-cyan-400 flex items-center justify-center shadow-lg shadow-indigo-500/20">
+        <i data-lucide="sparkles" class="w-5 h-5 text-white"></i>
+      </div>
+      <span class="text-xl font-extrabold tracking-tight text-white">Mockuplevel</span>
+    </a>
+
+    <!-- Card -->
+    <section class="glass-panel rounded-2xl p-6 sm:p-8 shadow-2xl">
+      <h1 class="text-2xl font-bold text-white">Welcome back</h1>
+      <p class="text-sm text-slate-400 mt-1 mb-6">Sign in to pick up where you left off.</p>
+
+      <form id="auth-form" data-redirect="/" class="space-y-4">
+
+        <div>
+          <label for="email" class="block text-sm font-medium text-slate-300 mb-1.5">Email</label>
+          <input id="email" name="email" type="email" autocomplete="email" required
+                 placeholder="you@example.com" class="glass-input">
+        </div>
+
+        <div>
+          <div class="flex items-center justify-between mb-1.5">
+            <label for="password" class="block text-sm font-medium text-slate-300">Password</label>
+            <a href="#" class="text-xs font-medium text-indigo-400 hover:text-indigo-300">Forgot password?</a>
+          </div>
+          <div class="relative">
+            <input id="password" name="password" type="password" autocomplete="current-password" required
+                   placeholder="Enter your password" class="glass-input has-icon-right">
+            <button type="button" class="field-icon-btn" data-toggle-password="password" aria-label="Show password">
+              <i data-lucide="eye" class="w-4 h-4"></i>
+            </button>
+          </div>
+        </div>
+
+        <label class="flex items-center gap-2 text-sm text-slate-300 cursor-pointer select-none">
+          <input type="checkbox" name="remember" class="w-4 h-4 rounded accent-indigo-500">
+          Keep me signed in
+        </label>
+
+        <button type="submit" class="btn-primary" data-loading="Signing in...">
+          <span class="btn-label">Sign in</span>
+        </button>
+      </form>
+    </section>
+
+    <p class="text-center text-sm text-slate-400 mt-6">
+      New to Mockuplevel?
+      <a href="/static/signup.html" class="font-semibold text-indigo-400 hover:text-indigo-300">Create an account</a>
+    </p>
+
+  </main>
+
+  <script src="/static/js/session.js"></script>
+  <script>Session.redirectIfSignedIn();</script>
+  <script src="/static/js/auth.js"></script>
+</body>
+</html>
