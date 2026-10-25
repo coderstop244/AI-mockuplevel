@@ -102,6 +102,12 @@
       </button>
     </nav>
 
+    <div id="session-navigation" class="flex items-center gap-3 text-xs">
+      <a id="session-signin" href="/static/signin.html" class="font-semibold text-indigo-400 hover:text-indigo-300">Sign in</a>
+      <span id="session-user" class="hidden max-w-32 truncate text-slate-300" aria-live="polite"></span>
+      <button id="session-signout" type="button" class="hidden font-semibold text-slate-300 hover:text-white">Sign out</button>
+    </div>
+
     <!-- Health Status Indicator -->
     <div id="system-health-pill" class="hidden sm:flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-900/80 border border-white/10">
       <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
@@ -269,6 +275,7 @@
         </form>
 
       </div>
+      
 
     </div>
 
@@ -602,6 +609,8 @@
   </div>
 
   <!-- App Main Logic -->
+  <script src="/static/js/session.js"></script>
+  <script>Session.renderNavigation();</script>
   <script src="/static/js/app.js"></script>
 </body>
 </html>
