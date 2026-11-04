@@ -1,1 +1,0 @@
-"""Multimodal study companion package."""
