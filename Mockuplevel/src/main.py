@@ -1,6 +1,9 @@
 """Mockuplevel application entry point and API routes."""
+
 from __future__ import annotations
 
+
+from fastapi import Depends
 import os
 import shutil
 import uuid
@@ -11,7 +14,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from tempfile import TemporaryDirectory
 
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, BackgroundTasks
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, BackgroundTasks,status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+import jwt
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, FileResponse, JSONResponse
@@ -122,6 +127,114 @@ class MasteryEventRequest(BaseModel):
 class KeyUpdateRequest(BaseModel):
     openai_api_key: str
 
+security = HTTPBearer(auto_error=False)
+optional_security = HTTPBearer(auto_error=False)
+
+class SignUpRequest(BaseModel):
+    email: str = Field(..., description="Valid email address")
+    password: str = Field(..., min_length=6, description="Password (at least 6 characters)")
+    full_name: Optional[str] = None
+
+
+class SignInRequest(BaseModel):
+    email: str = Field(..., description="Valid email address")
+    password: str = Field(..., min_length=1, description="Password")
+
+
+@app.post("/api/v1/auth/signup")
+def sign_up(payload: SignUpRequest):
+    """Register a new user in Supabase Auth (automatically triggers profiles row)."""
+    try:
+        name = (payload.full_name or "").strip() or payload.email.split("@")[0]
+        response = supabase.auth.sign_up({
+            "email": payload.email.strip().lower(),
+            "password": payload.password,
+            "options": {
+                "data": {
+                    "full_name": name,
+                    "tenant_id": DEFAULT_TENANT_ID
+                }
+            }
+        })
+        if not response.user:
+            raise HTTPException(status_code=400, detail="Sign up failed")
+
+        session = response.session
+        return {
+            "access_token": session.access_token if session else None,
+            "token_type": "bearer",
+            "user": {
+                "id": response.user.id,
+                "email": response.user.email,
+                "full_name": name
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/api/v1/auth/signin")
+def sign_in(payload: SignInRequest):
+    """Authenticate user with email & password, returning JWT access token."""
+    try:
+        response = supabase.auth.sign_in_with_password({
+            "email": payload.email.strip().lower(),
+            "password": payload.password
+        })
+        if not response.session:
+            raise HTTPException(status_code=401, detail="Invalid credentials")
+
+        meta = response.user.user_metadata or {}
+        name = meta.get("full_name") or response.user.email.split("@")[0]
+        return {
+            "access_token": response.session.access_token,
+            "token_type": "bearer",
+            "user": {
+                "id": response.user.id,
+                "email": response.user.email,
+                "full_name": name
+            }
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Authentication failed: {e}")
+
+
+def get_optional_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(optional_security)) -> Optional[dict]:
+    """Extracts user from JWT token if present, returns None otherwise."""
+    if not credentials or not credentials.credentials:
+        return None
+    try:
+        user_res = supabase.auth.get_user(credentials.credentials)
+        if not user_res or not user_res.user:
+            return None
+        meta = user_res.user.user_metadata or {}
+        name = meta.get("full_name") or user_res.user.email.split("@")[0]
+        return {
+            "id": user_res.user.id,
+            "email": user_res.user.email,
+            "full_name": name
+        }
+    except Exception:
+        return None
+
+
+def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)) -> dict:
+    """Validates the incoming JWT and returns the user payload (strictly requires auth)."""
+    user = get_optional_user(credentials)
+    if not user:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
+    return user
+
+
+@app.get("/api/v1/auth/me")
+def get_me(current_user: dict = Depends(get_current_user)):
+    """Returns the authenticated user details from their JWT."""
+    return {"user": current_user}
+
 
 # -----------------------------
 # Frontend Route
@@ -190,7 +303,7 @@ def get_settings():
     }
 
 
-@app.post("/api/v1/settings/key")
+@app.post("/api/v1/settings/key", dependencies=[Depends(get_current_user)])
 def update_openai_key(payload: KeyUpdateRequest):
     key = payload.openai_api_key.strip()
     if not key:
@@ -210,7 +323,7 @@ def update_openai_key(payload: KeyUpdateRequest):
 # -----------------------------
 # Supabase Storage & Uploads
 # -----------------------------
-@app.get("/api/v1/storage/files")
+@app.get("/api/v1/storage/files", dependencies=[Depends(get_current_user)])
 def list_storage_files():
     """Lists files in Supabase storage buckets with ingestion status."""
     results = []
@@ -265,7 +378,7 @@ def list_storage_files():
     return {"files": results}
 
 
-@app.post("/api/v1/upload")
+@app.post("/api/v1/upload", dependencies=[Depends(get_current_user)])
 async def upload_file(
     file: UploadFile = File(...),
     auto_ingest: bool = Form(True),
@@ -471,7 +584,7 @@ def execute_doc_pipeline(
 # -----------------------------
 # Ingestion Endpoints
 # -----------------------------
-@app.post("/api/v1/ingest/video")
+@app.post("/api/v1/ingest/video", dependencies=[Depends(get_current_user)])
 def trigger_video_ingestion(payload: VideoIngestRequest, background_tasks: BackgroundTasks):
     """Triggers asynchronous ingestion using Celery or FastAPI BackgroundTasks."""
     task_id = str(uuid.uuid4())
@@ -503,7 +616,7 @@ def trigger_video_ingestion(payload: VideoIngestRequest, background_tasks: Backg
         }
 
 
-@app.post("/api/v1/ingest/document")
+@app.post("/api/v1/ingest/document", dependencies=[Depends(get_current_user)])
 def trigger_document_ingestion(payload: DocumentIngestRequest, background_tasks: BackgroundTasks):
     task_id = str(uuid.uuid4())
     # If storage path given, download it
@@ -538,7 +651,7 @@ def trigger_document_ingestion(payload: DocumentIngestRequest, background_tasks:
     }
 
 
-@app.get("/api/v1/tasks/{task_id}")
+@app.get("/api/v1/tasks/{task_id}", dependencies=[Depends(get_current_user)])
 def get_task_status(task_id: str):
     """Poll background task status."""
     if task_id in TASK_REGISTRY:
@@ -563,7 +676,7 @@ def get_task_status(task_id: str):
 # -----------------------------
 # Study Materials & Sources
 # -----------------------------
-@app.get("/api/v1/sources")
+@app.get("/api/v1/sources", dependencies=[Depends(get_current_user)])
 def list_sources():
     """Returns all ingested sources, chunk counts, durations, and keyframes."""
     try:
@@ -601,7 +714,7 @@ def list_sources():
     }
 
 
-@app.get("/api/v1/sources/{source_id}/stream")
+@app.get("/api/v1/sources/{source_id}/stream", dependencies=[Depends(get_current_user)])
 def get_stream_url(source_id: str):
     """Returns signed streaming URL or static URL."""
     # 1. Check local static uploads
@@ -625,7 +738,7 @@ def get_stream_url(source_id: str):
     }
 
 
-@app.get("/api/v1/sources/{source_id}/transcript")
+@app.get("/api/v1/sources/{source_id}/transcript", dependencies=[Depends(get_current_user)])
 def get_source_transcript(source_id: str):
     """Returns sorted transcript segments with timestamps."""
     try:
@@ -651,7 +764,7 @@ def get_source_transcript(source_id: str):
     return {"source_id": source_id, "segments": segments}
 
 
-@app.get("/api/v1/sources/{source_id}/keyframes")
+@app.get("/api/v1/sources/{source_id}/keyframes", dependencies=[Depends(get_current_user)])
 def get_source_keyframes(source_id: str):
     """Returns list of extracted keyframes with image URLs."""
     kf_dir = KEYFRAMES_DIR / source_id
@@ -677,7 +790,7 @@ def get_source_keyframes(source_id: str):
 # -----------------------------
 # AI Study Companion Chat
 # -----------------------------
-@app.post("/api/v1/chat")
+@app.post("/api/v1/chat", dependencies=[Depends(get_current_user)])
 def study_chat(payload: ChatRequest):
     """Multimodal Study Companion Chat with RAG search & citations."""
     query = payload.message.strip()
@@ -800,7 +913,7 @@ def study_chat(payload: ChatRequest):
 # -----------------------------
 # Mock Papers
 # -----------------------------
-@app.post("/api/v1/study/mock-papers")
+@app.post("/api/v1/study/mock-papers", dependencies=[Depends(get_current_user)])
 def generate_mock_papers(payload: MockPapersRequest):
     """Generate ten topic-grounded mock papers with varied question counts."""
     key = RUNTIME_CONFIG.get("OPENAI_API_KEY", "").strip()
@@ -1062,7 +1175,7 @@ Study material:
 # -----------------------------
 # Active Recall (Flashcards, Quizzes, Summary)
 # -----------------------------
-@app.post("/api/v1/study/flashcards")
+@app.post("/api/v1/study/flashcards", dependencies=[Depends(get_current_user)])
 def generate_flashcards(payload: FlashcardRequest):
     """Generates active-recall flashcard deck."""
     # Fetch chunks
@@ -1109,7 +1222,7 @@ def generate_flashcards(payload: FlashcardRequest):
     return {"cards": cards, "source_id": payload.source_id, "total": len(cards)}
 
 
-@app.post("/api/v1/study/quiz")
+@app.post("/api/v1/study/quiz", dependencies=[Depends(get_current_user)])
 def generate_quiz(payload: QuizRequest):
     """Generates multiple-choice quiz questions with instant feedback."""
     questions = [
@@ -1156,7 +1269,7 @@ def generate_quiz(payload: QuizRequest):
     return {"questions": questions, "source_id": payload.source_id}
 
 
-@app.post("/api/v1/study/summary")
+@app.post("/api/v1/study/summary", dependencies=[Depends(get_current_user)])
 def generate_summary(payload: SummaryRequest):
     """Generates an executive study guide and cheat sheet."""
     summary = {
@@ -1185,46 +1298,48 @@ def generate_summary(payload: SummaryRequest):
 # -----------------------------
 # Mastery & Progress Analytics
 # -----------------------------
-@app.get("/api/v1/mastery")
-def get_mastery_analytics():
-    """Returns learner mastery stats from Supabase."""
-    try:
-        events = supabase.table("learning_events").select("*").limit(20).execute().data or []
-    except Exception:
-        events = []
+@app.get("/api/v1/mastery", dependencies=[Depends(get_current_user)])
+def get_user_mastery(current_user: Optional[dict] = Depends(get_optional_user)):
+    """Fetch mastery for the logged-in user, or sensible defaults for guests."""
+    user_id = current_user["id"] if current_user else None
+    topics = []
+    if user_id:
+        try:
+            res = supabase.table("learner_mastery").select("*").eq("user_id", user_id).execute()
+            if res.data:
+                topics = [
+                    {
+                        "topic": m.get("topic_id", "Topic").replace("_", " ").title(),
+                        "mastery": int((m.get("mastery_score") or 0) * 100),
+                        "status": "Mastered" if (m.get("mastery_score") or 0) >= 0.8 else ("Proficient" if (m.get("mastery_score") or 0) >= 0.5 else "Practicing")
+                    }
+                    for m in res.data
+                ]
+        except Exception:
+            topics = []
 
-    try:
-        mastery = supabase.table("learner_mastery").select("*").limit(10).execute().data or []
-    except Exception:
-        mastery = []
-
-    # Calculate average mastery
-    avg_score = 82
-    if mastery:
-        scores = [m.get("mastery_score", 0) for m in mastery if "mastery_score" in m]
-        if scores:
-            avg_score = int(sum(scores) / len(scores))
-
-    return {
-        "overall_mastery": avg_score,
-        "topics": [
+    if not topics:
+        topics = [
             {"topic": "PostgreSQL Architecture", "mastery": 90, "status": "Mastered"},
             {"topic": "ACID Compliance & Transactions", "mastery": 85, "status": "Proficient"},
             {"topic": "Indexing & Query Optimization", "mastery": 72, "status": "Practicing"},
             {"topic": "pgvector & Embeddings", "mastery": 80, "status": "Proficient"}
-        ],
-        "recent_events": events,
-        "study_streak_days": 4,
-        "total_study_minutes": 145
+        ]
+
+    return {
+        "overall_mastery": int(sum(t["mastery"] for t in topics) / len(topics)) if topics else 80,
+        "topics": topics,
+        "is_authenticated": bool(user_id)
     }
 
 
-@app.post("/api/v1/mastery/event")
-def record_mastery_event(payload: MasteryEventRequest):
-    """Records a study event to learning_events table."""
+@app.post("/api/v1/mastery/event", dependencies=[Depends(get_current_user)])
+def record_mastery_event(payload: MasteryEventRequest, current_user: Optional[dict] = Depends(get_optional_user)):
+    """Record learning event linked to authenticated user."""
     try:
+        user_id = current_user["id"] if current_user else str(uuid.UUID(DEFAULT_TENANT_ID))
         row = {
-            "user_id": str(uuid.UUID(DEFAULT_TENANT_ID)),
+            "user_id": user_id,
             "course_id": str(uuid.UUID(payload.course_id or DEFAULT_COURSE_ID)),
             "topic_id": payload.topic_id,
             "event_type": payload.event_type,

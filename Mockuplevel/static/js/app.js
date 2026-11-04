@@ -3,6 +3,26 @@
  * User-isolated data, theme switcher (Dark/Light + Accents), and interactive tools
  */
 
+async function authFetch(url, options = {}) {
+  const token = localStorage.getItem('mockuplevel_jwt');
+  const headers = new Headers(options.headers || {});
+
+  if (!(options.body instanceof FormData) && !headers.has('Content-Type')) {
+    headers.set('Content-Type', 'application/json');
+  }
+  if (token) {
+    headers.set('Authorization', `Bearer ${token}`);
+  }
+
+  const res = await fetch(url, { ...options, headers });
+  if (res.status === 401) {
+    window.location.href = '/static/signin.html';
+  }
+  return res;
+}
+
+window.authFetch = authFetch;
+
 const App = {
   state: {
     activeTab: 'dashboard',
@@ -32,8 +52,16 @@ const App = {
     mockPaperTimeLeft: 3600
   },
 
-  init() {
+  async init() {
     this.restoreUserAndTheme();
+    if (window.Session) {
+      await window.Session.validateSession();
+      if (!window.Session.isSignedIn()) {
+        window.location.replace('/static/signin.html');
+        return;
+      }
+      this.state.user = window.Session.getUser();
+    }
     this.setupEventListeners();
     this.initUserData();
     this.renderDashboard();
@@ -46,6 +74,10 @@ const App = {
       window.Session.renderNavigation();
     }
     this.renderIcons();
+  },
+
+  apiFetch(url, options = {}) {
+    return authFetch(url, options);
   },
 
   renderIcons() {
@@ -104,16 +136,7 @@ const App = {
   },
 
   promptSwitchUser() {
-    const email = prompt('Enter a Gmail address to log in as a different user:', 'alex@gmail.com');
-    if (email && email.trim()) {
-      const name = prompt('Enter the learner name:', email.split('@')[0]);
-      window.Session.signIn({
-        email: email.trim(),
-        name: name ? name.trim() : email.split('@')[0],
-        provider: 'google'
-      });
-      window.location.reload();
-    }
+    window.location.href = '/static/signin.html';
   },
 
   // -----------------------------
@@ -335,7 +358,7 @@ const App = {
   // -----------------------------
   async fetchSources() {
     try {
-      const res = await fetch('/api/v1/sources');
+      const res = await this.apiFetch('/api/v1/sources');
       const data = await res.json();
       this.state.sources = data.sources || [];
       this.renderMaterialsGrid();
@@ -399,7 +422,7 @@ const App = {
     if (spinner) spinner.classList.add('animate-spin');
 
     try {
-      const res = await fetch('/api/v1/storage/files');
+      const res = await this.apiFetch('/api/v1/storage/files');
       const data = await res.json();
       this.state.storageFiles = data.files || [];
       this.renderStorageFiles();
@@ -450,7 +473,7 @@ const App = {
     this.showToast(`Starting ingestion for ${filename}...`, 'info');
     try {
       const endpoint = type === 'video' ? '/api/v1/ingest/video' : '/api/v1/ingest/document';
-      const res = await fetch(endpoint, {
+      const res = await this.apiFetch(endpoint, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ source_id: filename, storage_path: filename })
@@ -471,7 +494,7 @@ const App = {
     formData.append('auto_ingest', 'true');
 
     try {
-      const res = await fetch('/api/v1/upload', {
+      const res = await this.apiFetch('/api/v1/upload', {
         method: 'POST',
         body: formData
       });
@@ -493,7 +516,7 @@ const App = {
     if (!wrapper) return;
 
     try {
-      const res = await fetch('/api/v1/study/mock-papers', {
+      const res = await this.apiFetch('/api/v1/study/mock-papers', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ source_id: this.state.selectedSource })
@@ -745,7 +768,7 @@ const App = {
   // -----------------------------
   async loadFlashcards() {
     try {
-      const res = await fetch('/api/v1/study/flashcards', {
+      const res = await this.apiFetch('/api/v1/study/flashcards', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ source_id: this.state.selectedSource })
@@ -824,7 +847,7 @@ const App = {
     if (!container) return;
 
     try {
-      const res = await fetch('/api/v1/mastery');
+      const res = await this.apiFetch('/api/v1/mastery');
       const data = await res.json();
       container.innerHTML = (data.topics || []).map(t => `
         <div class="app-card p-4 space-y-2">
@@ -865,7 +888,7 @@ const App = {
     if (!key) return this.showToast('Please enter an API key', 'warning');
 
     try {
-      const res = await fetch('/api/v1/settings/key', {
+      const res = await this.apiFetch('/api/v1/settings/key', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ openai_api_key: key })
