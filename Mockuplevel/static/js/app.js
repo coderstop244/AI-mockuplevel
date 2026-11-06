@@ -183,6 +183,26 @@ const App = {
     this.renderRecentActivities();
   },
 
+  async recordLearningEvent(topicId, isCorrect, eventType, evidencePayload) {
+    try {
+      const res = await this.apiFetch('/api/v1/mastery/event', {
+        method: 'POST',
+        body: JSON.stringify({
+          topic_id: topicId || 'general',
+          is_correct: Boolean(isCorrect),
+          event_type: eventType,
+          evidence_payload: evidencePayload || {}
+        })
+      });
+      if (!res.ok) {
+        throw new Error(`Learning event failed with status ${res.status}`);
+      }
+    } catch (err) {
+      console.warn('Learning event could not be saved:', err);
+      this.showToast('Progress could not be synchronized.', 'error', 2200);
+    }
+  },
+
   // -----------------------------
   // Navigation & Tabs
   // -----------------------------
@@ -671,6 +691,20 @@ const App = {
     this.state.mockReports.unshift(report);
     window.Session.setUserData('mock_reports', this.state.mockReports);
 
+    paper.questions.forEach((question, index) => {
+      const selected = review[index].selectedIndex;
+      this.recordLearningEvent(
+        paper.title,
+        review[index].isCorrect,
+        'mock_exam_question',
+        {
+          question_number: index + 1,
+          selected_index: selected,
+          score_percentage: pct
+        }
+      );
+    });
+
     // Record activity
     this.recordUserActivity(`Completed ${paper.title}`, `Score: ${correct}/${total} (${pct}%)`, 'award', pct >= 70 ? 'emerald' : 'amber');
 
@@ -801,6 +835,11 @@ const App = {
     if (mastered) {
       this.showToast('Card marked as mastered! 🌟', 'success', 1500);
       this.recordUserActivity('Mastered Flashcard', 'Active recall retention', 'zap', 'emerald');
+      const card = this.state.flashcards[this.state.currentCardIndex];
+      this.recordLearningEvent(card && card.topic, true, 'flashcard_review', {
+        source_id: this.state.selectedSource,
+        card_id: card && card.id
+      });
     }
     if (this.state.currentCardIndex < this.state.flashcards.length - 1) {
       this.state.currentCardIndex++;

@@ -67,6 +67,15 @@ REDIS_URL=redis://localhost:6379/
 The selected study material must be uploaded and ingested before chat or mock-paper
 generation can retrieve RAG context.
 
+### User-scoped materials and progress
+
+Run [`supabase_user_scoping.sql`](./supabase_user_scoping.sql) in Supabase before
+using multi-user uploads. It creates the per-user material registry, adds
+`document_chunks.user_id`, and enables row-level security for materials,
+learning events, and mastery records. The API passes the authenticated Supabase
+user ID through local and Celery ingestion jobs, and quiz/flashcard events update
+that user's mastery only.
+
 ---
 
 ## 📝 Mock Paper Workflow

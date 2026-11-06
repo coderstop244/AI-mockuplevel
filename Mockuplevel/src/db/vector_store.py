@@ -53,6 +53,7 @@ class VectorStore:
 
             media_type = c.get("media_type") or c.get("metadata", {}).get("media_type", "video")
             row = {
+                "user_id": c.get("user_id"),
                 "tenant_id": c.get("tenant_id") or DEFAULT_TENANT_ID,
                 "course_id": c.get("course_id") or DEFAULT_COURSE_ID,
                 "source_id": c.get("source_id", "default"),
@@ -79,11 +80,19 @@ class VectorStore:
             ) from exc
 
 
-def search_relevant_context(query_text: str, query_embedding: list = None, tenant_id: str = None, course_id: str = None, source_id: str = None, match_count: int = 5):
+def search_relevant_context(
+    query_text: str,
+    query_embedding: list = None,
+    tenant_id: str = None,
+    course_id: str = None,
+    source_id: str = None,
+    user_id: str = None,
+    match_count: int = 5,
+):
     # 1. Try match_document_chunks_rrf RPC if tenant and course IDs are provided
     # The current RPC contract has no source filter. For topic-scoped study
     # sessions, use the source-filtered vector query below instead.
-    if tenant_id and course_id and query_embedding and not source_id:
+    if tenant_id and course_id and query_embedding and not source_id and not user_id:
         try:
             response = supabase.rpc(
                 "match_document_chunks_rrf",
@@ -111,6 +120,8 @@ def search_relevant_context(query_text: str, query_embedding: list = None, tenan
                 query = query.eq("course_id", course_id)
             if source_id:
                 query = query.eq("source_id", source_id)
+            if user_id:
+                query = query.eq("user_id", user_id)
 
             rows = query.limit(2000).execute().data or []
             scored = []
@@ -158,6 +169,8 @@ def search_relevant_context(query_text: str, query_embedding: list = None, tenan
             query = query.eq("course_id", course_id)
         if source_id:
             query = query.eq("source_id", source_id)
+        if user_id:
+            query = query.eq("user_id", user_id)
         
         words = [w for w in query_text.replace("?", "").replace(",", "").split() if len(w) > 3]
         if words:
@@ -176,6 +189,8 @@ def search_relevant_context(query_text: str, query_embedding: list = None, tenan
             fallback = fallback.eq("course_id", course_id)
         if source_id:
             fallback = fallback.eq("source_id", source_id)
+        if user_id:
+            fallback = fallback.eq("user_id", user_id)
         res_fb = fallback.order("created_at", desc=False).limit(match_count).execute()
         return res_fb.data or []
     except Exception as exc:

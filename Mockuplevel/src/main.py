@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 
+import asyncio
+import logging
 from fastapi import Depends
 import os
 import shutil
@@ -28,6 +30,23 @@ from src.db.vector_store import VectorStore, search_relevant_context, DEFAULT_TE
 from src.pipeline.video_processor import VideoProcessor
 from src.pipeline.chunker import EmbeddingChunker
 from src.pipeline.doc_processor import DocumentProcessor
+
+logger = logging.getLogger(__name__)
+
+
+def _is_transient_socket_error(exc: BaseException) -> bool:
+    """Identify Windows' temporary non-blocking socket error through wrappers."""
+    current: Optional[BaseException] = exc
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if getattr(current, "winerror", None) == 10035:
+            return True
+        if "WinError 10035" in str(current):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
 
 app = FastAPI(
     title="Mockuplevel - Multimodal Study Companion API",
@@ -230,6 +249,42 @@ def get_current_user(credentials: Optional[HTTPAuthorizationCredentials] = Depen
     return user
 
 
+def _user_material_ids(user_id: str) -> set[str]:
+    try:
+        response = (
+            supabase.table("user_materials")
+            .select("source_id")
+            .eq("user_id", user_id)
+            .execute()
+        )
+        return {row["source_id"] for row in (response.data or [])}
+    except Exception as exc:
+        logger.exception("Could not load materials for user %s", user_id)
+        raise HTTPException(
+            status_code=502,
+            detail=f"Could not load your materials: {exc}",
+        ) from exc
+
+
+def _update_material_status(
+    user_id: Optional[str],
+    source_id: str,
+    status: str,
+    chunks_count: Optional[int] = None,
+) -> None:
+    if not user_id:
+        return
+    values: Dict[str, Any] = {"status": status}
+    if chunks_count is not None:
+        values["chunks_count"] = chunks_count
+    try:
+        supabase.table("user_materials").update(values).eq(
+            "user_id", user_id
+        ).eq("source_id", source_id).execute()
+    except Exception:
+        logger.exception("Could not update material status for %s", source_id)
+
+
 @app.get("/api/v1/auth/me")
 def get_me(current_user: dict = Depends(get_current_user)):
     """Returns the authenticated user details from their JWT."""
@@ -323,14 +378,21 @@ def update_openai_key(payload: KeyUpdateRequest):
 # -----------------------------
 # Supabase Storage & Uploads
 # -----------------------------
-@app.get("/api/v1/storage/files", dependencies=[Depends(get_current_user)])
-def list_storage_files():
+@app.get("/api/v1/storage/files")
+def list_storage_files(current_user: dict = Depends(get_current_user)):
     """Lists files in Supabase storage buckets with ingestion status."""
     results = []
+    user_id = current_user["id"]
+    owned_materials = _user_material_ids(user_id)
 
     # Check ingested sources
     try:
-        chunks_res = supabase.table("document_chunks").select("source_id").execute()
+        chunks_res = (
+            supabase.table("document_chunks")
+            .select("source_id")
+            .eq("user_id", user_id)
+            .execute()
+        )
         ingested_ids = {row["source_id"] for row in (chunks_res.data or [])}
     except Exception:
         ingested_ids = set()
@@ -340,7 +402,7 @@ def list_storage_files():
         vdo_files = supabase.storage.from_("Mockvdo").list()
         for f in vdo_files:
             name = f.get("name")
-            if not name or name.startswith("."):
+            if not name or name.startswith(".") or name not in owned_materials:
                 continue
             signed = supabase.storage.from_("Mockvdo").create_signed_url(name, 3600)
             url = signed.get("signedURL") or signed.get("signedUrl")
@@ -360,7 +422,7 @@ def list_storage_files():
         doc_files = supabase.storage.from_("document").list()
         for f in doc_files:
             name = f.get("name")
-            if not name or name.startswith("."):
+            if not name or name.startswith(".") or name not in owned_materials:
                 continue
             signed = supabase.storage.from_("document").create_signed_url(name, 3600)
             url = signed.get("signedURL") or signed.get("signedUrl")
@@ -378,15 +440,19 @@ def list_storage_files():
     return {"files": results}
 
 
-@app.post("/api/v1/upload", dependencies=[Depends(get_current_user)])
+@app.post("/api/v1/upload")
 async def upload_file(
     file: UploadFile = File(...),
     auto_ingest: bool = Form(True),
-    background_tasks: BackgroundTasks = BackgroundTasks()
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    current_user: dict = Depends(get_current_user),
 ):
     """Direct file upload for videos or documents."""
+    user_id = current_user["id"]
     filename = Path(file.filename).name
-    save_path = UPLOADS_DIR / filename
+    user_upload_dir = UPLOADS_DIR / user_id
+    user_upload_dir.mkdir(parents=True, exist_ok=True)
+    save_path = user_upload_dir / filename
     with open(save_path, "wb") as buffer:
         shutil.copyfileobj(file.file, buffer)
 
@@ -398,26 +464,61 @@ async def upload_file(
     if is_doc or is_video:
         bucket = "document" if is_doc else VIDEO_BUCKET
         try:
-            supabase.storage.from_(bucket).upload(
-                filename,
-                save_path.read_bytes(),
-                {
-                    "content-type": file.content_type or "application/octet-stream",
-                    "upsert": "true",
-                },
-            )
+            file_bytes = save_path.read_bytes()
+            file_options = {
+                "content-type": file.content_type or "application/octet-stream",
+                "upsert": "true",
+            }
+            last_error = None
+            for attempt in range(3):
+                try:
+                    await asyncio.to_thread(
+                        supabase.storage.from_(bucket).upload,
+                        filename,
+                        file_bytes,
+                        file_options,
+                    )
+                    last_error = None
+                    break
+                except Exception as exc:
+                    last_error = exc
+                    if not _is_transient_socket_error(exc) or attempt == 2:
+                        raise
+                    await asyncio.sleep(0.5 * (attempt + 1))
+            if last_error is not None:
+                raise last_error
             storage_bucket = bucket
         except Exception as exc:
+            logger.exception("Supabase upload failed for bucket %s and file %s", bucket, filename)
             save_path.unlink(missing_ok=True)
             raise HTTPException(
                 status_code=502,
                 detail=(
-                    f"File was saved locally but could not be uploaded to "
-                    f"Supabase bucket '{bucket}': {exc}"
+                    f"File could not be uploaded to Supabase bucket '{bucket}': "
+                    f"{type(exc).__name__}: {exc}"
                 ),
             ) from exc
 
     task_id = str(uuid.uuid4())
+    if is_doc or is_video:
+        try:
+            supabase.table("user_materials").upsert({
+                "user_id": user_id,
+                "course_id": str(uuid.UUID(DEFAULT_COURSE_ID)),
+                "source_id": filename,
+                "title": Path(filename).stem.replace("_", " ").title(),
+                "media_type": "video" if is_video else "document",
+                "storage_path": filename,
+                "file_size_bytes": save_path.stat().st_size,
+                "status": "processing" if auto_ingest else "ready",
+            }, on_conflict="user_id,source_id").execute()
+        except Exception as exc:
+            logger.exception("Could not register uploaded material for user %s", user_id)
+            raise HTTPException(
+                status_code=502,
+                detail=f"Uploaded file could not be registered: {exc}",
+            ) from exc
+
     if auto_ingest:
         if is_video:
             background_tasks.add_task(
@@ -425,14 +526,16 @@ async def upload_file(
                 task_id=task_id,
                 local_video_path=save_path,
                 source_id=filename,
-                storage_path=None
+                storage_path=None,
+                user_id=user_id,
             )
         elif is_doc:
             background_tasks.add_task(
                 execute_doc_pipeline,
                 task_id=task_id,
                 local_doc_path=save_path,
-                source_id=filename
+                source_id=filename,
+                user_id=user_id,
             )
 
     return {
@@ -443,7 +546,7 @@ async def upload_file(
         "storage_bucket": storage_bucket,
         "storage_path": filename if (is_doc or is_video) else None,
         "task_id": task_id if auto_ingest else None,
-        "local_url": f"/static/uploads/{filename}"
+        "local_url": f"/static/uploads/{user_id}/{filename}"
     }
 
 
@@ -455,6 +558,7 @@ def execute_video_pipeline(
     source_id: str,
     storage_path: Optional[str] = None,
     local_video_path: Optional[Path] = None,
+    user_id: Optional[str] = None,
     tenant_id: str = DEFAULT_TENANT_ID,
     course_id: str = DEFAULT_COURSE_ID
 ):
@@ -485,7 +589,7 @@ def execute_video_pipeline(
             res = video_proc.process(str(vid_file), temp_dir)
 
             # Copy keyframes to static folder for UI display
-            kf_dest = KEYFRAMES_DIR / source_id
+            kf_dest = KEYFRAMES_DIR / str(user_id) / source_id
             kf_dest.mkdir(parents=True, exist_ok=True)
             for kf in res.get("keyframes", []):
                 shutil.copy(kf, kf_dest / Path(kf).name)
@@ -495,6 +599,7 @@ def execute_video_pipeline(
             TASK_REGISTRY[task_id]["progress"] = 80
             chunks = chunker.chunk_transcript(res["transcripts"], source_id)
             for c in chunks:
+                c["user_id"] = user_id
                 c["tenant_id"] = tenant_id
                 c["course_id"] = course_id
 
@@ -508,6 +613,7 @@ def execute_video_pipeline(
                 "chunks_count": len(saved),
                 "keyframes_count": len(res.get("keyframes", []))
             }
+            _update_material_status(user_id, source_id, "ready", len(saved))
     except Exception as exc:
         print("Video ingestion error:", exc)
         TASK_REGISTRY[task_id] = {
@@ -517,12 +623,14 @@ def execute_video_pipeline(
             "error": str(exc),
             "source_id": source_id
         }
+        _update_material_status(user_id, source_id, "failed")
 
 
 def execute_doc_pipeline(
     task_id: str,
     source_id: str,
     local_doc_path: Path,
+    user_id: Optional[str] = None,
     tenant_id: str = DEFAULT_TENANT_ID,
     course_id: str = DEFAULT_COURSE_ID
 ):
@@ -548,6 +656,7 @@ def execute_doc_pipeline(
             for p in paras:
                 emb = chunker.generate_embedding(p)
                 chunks.append({
+                    "user_id": user_id,
                     "tenant_id": tenant_id,
                     "course_id": course_id,
                     "source_id": source_id,
@@ -570,6 +679,7 @@ def execute_doc_pipeline(
             "chunks_count": len(saved),
             "pages_count": len(pages)
         }
+        _update_material_status(user_id, source_id, "ready", len(saved))
     except Exception as exc:
         print("Doc ingestion error:", exc)
         TASK_REGISTRY[task_id] = {
@@ -579,19 +689,33 @@ def execute_doc_pipeline(
             "error": str(exc),
             "source_id": source_id
         }
+        _update_material_status(user_id, source_id, "failed")
 
 
 # -----------------------------
 # Ingestion Endpoints
 # -----------------------------
-@app.post("/api/v1/ingest/video", dependencies=[Depends(get_current_user)])
-def trigger_video_ingestion(payload: VideoIngestRequest, background_tasks: BackgroundTasks):
+@app.post("/api/v1/ingest/video")
+def trigger_video_ingestion(
+    payload: VideoIngestRequest,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user),
+):
     """Triggers asynchronous ingestion using Celery or FastAPI BackgroundTasks."""
     task_id = str(uuid.uuid4())
+    user_id = current_user["id"]
+    if payload.source_id not in _user_material_ids(user_id):
+        raise HTTPException(status_code=404, detail="Study material not found")
     # Try Celery if Redis is up
     try:
         from src.tasks.celery_worker import process_video_ingestion
-        celery_task = process_video_ingestion.delay(payload.storage_path, payload.source_id)
+        celery_task = process_video_ingestion.delay(
+            payload.storage_path,
+            payload.source_id,
+            user_id,
+            payload.tenant_id or DEFAULT_TENANT_ID,
+            payload.course_id or DEFAULT_COURSE_ID,
+        )
         return {
             "status": "Queued",
             "task_id": celery_task.id,
@@ -605,6 +729,7 @@ def trigger_video_ingestion(payload: VideoIngestRequest, background_tasks: Backg
             task_id=task_id,
             source_id=payload.source_id,
             storage_path=payload.storage_path,
+            user_id=user_id,
             tenant_id=payload.tenant_id or DEFAULT_TENANT_ID,
             course_id=payload.course_id or DEFAULT_COURSE_ID
         )
@@ -616,13 +741,21 @@ def trigger_video_ingestion(payload: VideoIngestRequest, background_tasks: Backg
         }
 
 
-@app.post("/api/v1/ingest/document", dependencies=[Depends(get_current_user)])
-def trigger_document_ingestion(payload: DocumentIngestRequest, background_tasks: BackgroundTasks):
+@app.post("/api/v1/ingest/document")
+def trigger_document_ingestion(
+    payload: DocumentIngestRequest,
+    background_tasks: BackgroundTasks,
+    current_user: dict = Depends(get_current_user),
+):
     task_id = str(uuid.uuid4())
+    user_id = current_user["id"]
+    if payload.storage_path and payload.source_id not in _user_material_ids(user_id):
+        raise HTTPException(status_code=404, detail="Study material not found")
     # If storage path given, download it
     doc_path = None
     if payload.storage_path:
-        local_target = UPLOADS_DIR / Path(payload.storage_path).name
+        local_target = UPLOADS_DIR / user_id / Path(payload.storage_path).name
+        local_target.parent.mkdir(parents=True, exist_ok=True)
         try:
             pdf_bytes = supabase.storage.from_("document").download(payload.storage_path)
             local_target.write_bytes(pdf_bytes)
@@ -640,6 +773,7 @@ def trigger_document_ingestion(payload: DocumentIngestRequest, background_tasks:
         task_id=task_id,
         source_id=payload.source_id,
         local_doc_path=doc_path,
+        user_id=user_id,
         tenant_id=payload.tenant_id or DEFAULT_TENANT_ID,
         course_id=payload.course_id or DEFAULT_COURSE_ID
     )
@@ -676,11 +810,16 @@ def get_task_status(task_id: str):
 # -----------------------------
 # Study Materials & Sources
 # -----------------------------
-@app.get("/api/v1/sources", dependencies=[Depends(get_current_user)])
-def list_sources():
+@app.get("/api/v1/sources")
+def list_sources(current_user: dict = Depends(get_current_user)):
     """Returns all ingested sources, chunk counts, durations, and keyframes."""
     try:
-        res = supabase.table("document_chunks").select("source_id, media_type, metadata, created_at").execute()
+        res = (
+            supabase.table("document_chunks")
+            .select("source_id, media_type, metadata, created_at")
+            .eq("user_id", current_user["id"])
+            .execute()
+        )
         rows = res.data or []
     except Exception as e:
         print("Error fetching sources:", e)
@@ -691,7 +830,7 @@ def list_sources():
         sid = r.get("source_id", "Unknown")
         if sid not in sources_map:
             # Check if keyframes exist locally
-            kf_dir = KEYFRAMES_DIR / sid
+            kf_dir = KEYFRAMES_DIR / current_user["id"] / sid
             kf_count = len(list(kf_dir.glob("*.jpg"))) if kf_dir.exists() else 0
             sources_map[sid] = {
                 "source_id": sid,
@@ -714,13 +853,18 @@ def list_sources():
     }
 
 
-@app.get("/api/v1/sources/{source_id}/stream", dependencies=[Depends(get_current_user)])
-def get_stream_url(source_id: str):
+@app.get("/api/v1/sources/{source_id}/stream")
+def get_stream_url(source_id: str, current_user: dict = Depends(get_current_user)):
     """Returns signed streaming URL or static URL."""
+    if source_id not in _user_material_ids(current_user["id"]):
+        raise HTTPException(status_code=404, detail="Study material not found")
     # 1. Check local static uploads
-    local_file = UPLOADS_DIR / source_id
+    local_file = UPLOADS_DIR / current_user["id"] / source_id
     if local_file.exists():
-        return {"url": f"/static/uploads/{source_id}", "type": "local"}
+        return {
+            "url": f"/static/uploads/{current_user['id']}/{source_id}",
+            "type": "local",
+        }
 
     # 2. Check Supabase signed URL
     try:
@@ -738,13 +882,14 @@ def get_stream_url(source_id: str):
     }
 
 
-@app.get("/api/v1/sources/{source_id}/transcript", dependencies=[Depends(get_current_user)])
-def get_source_transcript(source_id: str):
+@app.get("/api/v1/sources/{source_id}/transcript")
+def get_source_transcript(source_id: str, current_user: dict = Depends(get_current_user)):
     """Returns sorted transcript segments with timestamps."""
     try:
         res = supabase.table("document_chunks") \
             .select("id, content, metadata") \
             .eq("source_id", source_id) \
+            .eq("user_id", current_user["id"]) \
             .execute()
         rows = res.data or []
     except Exception as e:
@@ -764,10 +909,12 @@ def get_source_transcript(source_id: str):
     return {"source_id": source_id, "segments": segments}
 
 
-@app.get("/api/v1/sources/{source_id}/keyframes", dependencies=[Depends(get_current_user)])
-def get_source_keyframes(source_id: str):
+@app.get("/api/v1/sources/{source_id}/keyframes")
+def get_source_keyframes(source_id: str, current_user: dict = Depends(get_current_user)):
     """Returns list of extracted keyframes with image URLs."""
-    kf_dir = KEYFRAMES_DIR / source_id
+    if source_id not in _user_material_ids(current_user["id"]):
+        raise HTTPException(status_code=404, detail="Study material not found")
+    kf_dir = KEYFRAMES_DIR / current_user["id"] / source_id
     if not kf_dir.exists():
         return {"source_id": source_id, "keyframes": []}
 
@@ -780,7 +927,7 @@ def get_source_keyframes(source_id: str):
         secs = timestamp % 60
         result.append({
             "filename": f.name,
-            "url": f"/static/keyframes/{source_id}/{f.name}",
+            "url": f"/static/keyframes/{current_user['id']}/{source_id}/{f.name}",
             "timestamp": timestamp,
             "formatted_time": f"{mins:02d}:{secs:02d}"
         })
@@ -790,8 +937,8 @@ def get_source_keyframes(source_id: str):
 # -----------------------------
 # AI Study Companion Chat
 # -----------------------------
-@app.post("/api/v1/chat", dependencies=[Depends(get_current_user)])
-def study_chat(payload: ChatRequest):
+@app.post("/api/v1/chat")
+def study_chat(payload: ChatRequest, current_user: dict = Depends(get_current_user)):
     """Multimodal Study Companion Chat with RAG search & citations."""
     query = payload.message.strip()
     if not query:
@@ -813,6 +960,7 @@ def study_chat(payload: ChatRequest):
         tenant_id=payload.tenant_id,
         course_id=payload.course_id,
         source_id=payload.source_id,
+        user_id=current_user["id"],
         match_count=5
     )
     if not chunks:
@@ -913,8 +1061,11 @@ def study_chat(payload: ChatRequest):
 # -----------------------------
 # Mock Papers
 # -----------------------------
-@app.post("/api/v1/study/mock-papers", dependencies=[Depends(get_current_user)])
-def generate_mock_papers(payload: MockPapersRequest):
+@app.post("/api/v1/study/mock-papers")
+def generate_mock_papers(
+    payload: MockPapersRequest,
+    current_user: dict = Depends(get_current_user),
+):
     """Generate ten topic-grounded mock papers with varied question counts."""
     key = RUNTIME_CONFIG.get("OPENAI_API_KEY", "").strip()
     if not key:
@@ -932,6 +1083,7 @@ def generate_mock_papers(payload: MockPapersRequest):
             tenant_id=payload.tenant_id,
             course_id=payload.course_id,
             source_id=payload.source_id,
+            user_id=current_user["id"],
             match_count=40,
         )
     except Exception as exc:
@@ -1175,11 +1327,15 @@ Study material:
 # -----------------------------
 # Active Recall (Flashcards, Quizzes, Summary)
 # -----------------------------
-@app.post("/api/v1/study/flashcards", dependencies=[Depends(get_current_user)])
-def generate_flashcards(payload: FlashcardRequest):
+@app.post("/api/v1/study/flashcards")
+def generate_flashcards(
+    payload: FlashcardRequest,
+    current_user: dict = Depends(get_current_user),
+):
     """Generates active-recall flashcard deck."""
     # Fetch chunks
     query = supabase.table("document_chunks").select("content, metadata")
+    query = query.eq("user_id", current_user["id"])
     if payload.source_id:
         query = query.eq("source_id", payload.source_id)
     rows = query.limit(10).execute().data or []
@@ -1318,7 +1474,7 @@ def get_user_mastery(current_user: Optional[dict] = Depends(get_optional_user)):
         except Exception:
             topics = []
 
-    if not topics:
+    if not topics and not user_id:
         topics = [
             {"topic": "PostgreSQL Architecture", "mastery": 90, "status": "Mastered"},
             {"topic": "ACID Compliance & Transactions", "mastery": 85, "status": "Proficient"},
@@ -1347,6 +1503,28 @@ def record_mastery_event(payload: MasteryEventRequest, current_user: Optional[di
             "evidence_payload": payload.evidence_payload or {}
         }
         res = supabase.table("learning_events").insert([row]).execute()
+        existing = (
+            supabase.table("learner_mastery")
+            .select("mastery_score, attempts_count")
+            .eq("user_id", user_id)
+            .eq("course_id", row["course_id"])
+            .eq("topic_id", payload.topic_id)
+            .limit(1)
+            .execute()
+        ).data or []
+        previous = existing[0] if existing else {}
+        attempts = int(previous.get("attempts_count") or 0)
+        previous_score = float(previous.get("mastery_score") or 0.0)
+        new_attempts = attempts + 1
+        new_score = ((previous_score * attempts) + (1.0 if payload.is_correct else 0.0)) / new_attempts
+        supabase.table("learner_mastery").upsert({
+            "user_id": user_id,
+            "course_id": row["course_id"],
+            "topic_id": payload.topic_id,
+            "mastery_score": new_score,
+            "confidence_score": min(1.0, new_attempts / 10.0),
+            "attempts_count": new_attempts,
+        }, on_conflict="user_id,topic_id").execute()
         return {"status": "success", "event_id": res.data[0]["id"] if res.data else None}
     except Exception as e:
         print("Failed to record learning event:", e)

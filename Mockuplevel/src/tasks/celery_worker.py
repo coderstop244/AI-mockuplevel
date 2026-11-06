@@ -18,7 +18,14 @@ chunker = EmbeddingChunker()
 db_store = VectorStore()
 
 @celery_app.task(name="process_video_ingestion", bind=True, max_retries=3)#creates queue
-def process_video_ingestion(self, storage_path: str, source_id: str):
+def process_video_ingestion(
+    self,
+    storage_path: str,
+    source_id: str,
+    user_id: str,
+    tenant_id: str,
+    course_id: str,
+):
     try:
         with TemporaryDirectory(prefix=f"ingest_{source_id}_") as temp_dir:
             local_video_path = Path(temp_dir) / Path(storage_path).name
@@ -29,6 +36,10 @@ def process_video_ingestion(self, storage_path: str, source_id: str):
 
             # 2. Chunk & Embed Transcripts
             chunks = chunker.chunk_transcript(res["transcripts"], source_id)
+            for chunk in chunks:
+                chunk["user_id"] = user_id
+                chunk["tenant_id"] = tenant_id
+                chunk["course_id"] = course_id
 
             # 3. Store into PostgreSQL + pgvector
             db_store.store_chunks(chunks)
