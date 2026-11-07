@@ -82,7 +82,7 @@
     },
 
     signInWithGoogle: function (customEmail, customName) {
-      var email = customEmail || prompt('Enter your Google Gmail address:', 'nikhil@gmail.com');
+      var email = customEmail || prompt('Enter your Google Gmail address:', 'user@gmail.com');
       if (!email || !email.trim()) return null;
 
       email = email.trim();
