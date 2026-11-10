@@ -12,8 +12,11 @@ from src.pipeline.chunker import EmbeddingChunker
 from src.db.vector_store import VectorStore
 
 celery_app = Celery("ingestion_worker", broker=settings.REDIS_URL, backend=settings.REDIS_URL)
-
-video_proc = VideoProcessor()
+video_proc = VideoProcessor(
+    whisper_model_size="base",
+    device="cuda",
+    compute_type="float16",
+)
 chunker = EmbeddingChunker()
 db_store = VectorStore()
 
