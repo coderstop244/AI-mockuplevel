@@ -207,6 +207,7 @@ const App = {
   // Navigation & Tabs
   // -----------------------------
   switchTab(tab) {
+    if (tab === 'upload') tab = 'materials';
     this.state.activeTab = tab;
 
     // Hide all tab views
@@ -394,9 +395,14 @@ const App = {
     if (!this.state.sources.length) {
       grid.innerHTML = `
         <div class="col-span-full text-center py-12 text-slate-400 text-xs">
-          No materials loaded yet. Upload your first lecture or PDF document.
+          <p class="mb-3">No materials loaded yet. Upload your first lecture or PDF document.</p>
+          <button onclick="App.triggerUpload()" class="px-4 py-2 rounded-xl bg-teal-600 hover:bg-teal-500 text-white font-semibold text-xs shadow transition-all inline-flex items-center gap-1.5 cursor-pointer">
+            <i data-lucide="upload-cloud" class="w-4 h-4"></i>
+            <span>Upload New Material</span>
+          </button>
         </div>
       `;
+      this.renderIcons();
       return;
     }
 
@@ -407,7 +413,9 @@ const App = {
             <span class="px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider ${s.media_type === 'video' ? 'bg-indigo-500/10 text-indigo-500' : 'bg-teal-500/10 text-teal-600'}">
               ${s.media_type}
             </span>
-            <span class="text-xs text-slate-400 font-mono">${s.chunks_count} chunks</span>
+            <span class="text-xs font-mono ${s.status === 'processing' ? 'text-amber-500 font-bold animate-pulse' : 'text-slate-400'}">
+              ${s.status === 'processing' ? 'Processing...' : `${s.chunks_count} chunks`}
+            </span>
           </div>
           <h4 class="font-bold text-sm text-slate-800 dark:text-slate-100">${this.escapeHtml(s.title)}</h4>
           <p class="text-[11px] text-slate-400 truncate mt-1">ID: ${this.escapeHtml(s.source_id)}</p>
@@ -499,15 +507,40 @@ const App = {
         body: JSON.stringify({ source_id: filename, storage_path: filename })
       });
       const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || `Ingestion failed (HTTP ${res.status})`);
+      }
       this.showToast(`Ingestion queued: Task ID ${data.task_id || 'OK'}`, 'success');
       this.recordUserActivity(`Ingested ${filename}`, 'Knowledge base indexing', 'upload-cloud', 'blue');
+      this.fetchSources();
+      this.fetchStorageFiles();
     } catch (err) {
       this.showToast(`Ingestion failed: ${err.message}`, 'error');
     }
   },
 
+  triggerUpload() {
+    this.switchTab('materials');
+    const input = document.getElementById('file-upload-input');
+    if (input) {
+      input.click();
+    }
+  },
+
   async handleFileUpload(file) {
     if (!file) return;
+
+    const uploadBtn = document.getElementById('btn-upload-material');
+    const uploadText = document.getElementById('btn-upload-text');
+    const origText = uploadText ? uploadText.textContent : 'Upload New Material';
+    if (uploadBtn) {
+      uploadBtn.disabled = true;
+      uploadBtn.classList.add('opacity-75', 'cursor-not-allowed');
+    }
+    if (uploadText) {
+      uploadText.textContent = 'Uploading...';
+    }
+
     this.showToast(`Uploading ${file.name}...`, 'info');
     const formData = new FormData();
     formData.append('file', file);
@@ -519,12 +552,31 @@ const App = {
         body: formData
       });
       const data = await res.json();
+
+      if (!res.ok) {
+        if (res.status === 401) {
+          this.showToast('Please sign in to upload study materials.', 'error');
+          setTimeout(() => { window.location.href = '/static/signin.html'; }, 1200);
+          return;
+        }
+        throw new Error(data.detail || `Upload failed (HTTP ${res.status})`);
+      }
+
       this.showToast(`Uploaded ${file.name} successfully! 🎉`, 'success');
       this.recordUserActivity(`Uploaded ${file.name}`, 'File upload', 'upload-cloud', 'blue');
       this.fetchSources();
       this.fetchStorageFiles();
     } catch (err) {
       this.showToast(`Upload failed: ${err.message}`, 'error');
+    } finally {
+      if (uploadBtn) {
+        uploadBtn.disabled = false;
+        uploadBtn.classList.remove('opacity-75', 'cursor-not-allowed');
+      }
+      if (uploadText) {
+        uploadText.textContent = origText;
+      }
+      this.renderIcons();
     }
   },
 
@@ -971,23 +1023,29 @@ const App = {
       }
     });
 
-    // File Dropzone setup
-    const dropzone = document.getElementById('upload-dropzone');
+    // File upload input and drag-and-drop setup
     const fileInput = document.getElementById('file-upload-input');
-    if (dropzone && fileInput) {
-      dropzone.addEventListener('click', () => fileInput.click());
+    if (fileInput) {
       fileInput.addEventListener('change', (e) => {
-        if (e.target.files.length) this.handleFileUpload(e.target.files[0]);
+        if (e.target.files && e.target.files.length) {
+          const file = e.target.files[0];
+          e.target.value = '';
+          this.handleFileUpload(file);
+        }
       });
-      dropzone.addEventListener('dragover', (e) => {
+    }
+
+    // Drag-and-drop directly onto My Study Materials
+    const materialsTab = document.getElementById('tab-materials');
+    if (materialsTab) {
+      materialsTab.addEventListener('dragover', (e) => {
         e.preventDefault();
-        dropzone.classList.add('border-teal-500');
       });
-      dropzone.addEventListener('dragleave', () => dropzone.classList.remove('border-teal-500'));
-      dropzone.addEventListener('drop', (e) => {
+      materialsTab.addEventListener('drop', (e) => {
         e.preventDefault();
-        dropzone.classList.remove('border-teal-500');
-        if (e.dataTransfer.files.length) this.handleFileUpload(e.dataTransfer.files[0]);
+        if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
+          this.handleFileUpload(e.dataTransfer.files[0]);
+        }
       });
     }
   },

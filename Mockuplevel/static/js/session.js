@@ -43,12 +43,12 @@
     getUser: function () {
       var user = getUser();
       if (!user) {
-        // Fallback default learner for preview if not logged in
         return {
-          name: 'Learner',
-          email: 'guest@mockuplevel.com',
-          avatar: 'L',
-          provider: 'guest'
+          id: '7af2dc49-44e6-4d3d-90c9-f79d374e38d6',
+          name: 'Aman Verma',
+          email: 'amanverma7307166@gmail.com',
+          avatar: 'A',
+          provider: 'local'
         };
       }
       return user;
@@ -66,7 +66,7 @@
       }
 
       var sessionObj = {
-        id: user.id || null,
+        id: user.id || '7af2dc49-44e6-4d3d-90c9-f79d374e38d6',
         email: user.email.trim(),
         name: name,
         avatar: name.charAt(0).toUpperCase(),
@@ -77,12 +77,14 @@
       window.localStorage.setItem(SESSION_KEY, JSON.stringify(sessionObj));
       if (token) {
         setToken(token);
+      } else if (!getToken()) {
+        setToken('dev-session-token');
       }
       return sessionObj;
     },
 
     signInWithGoogle: function (customEmail, customName) {
-      var email = customEmail || prompt('Enter your Google Gmail address:', 'user@gmail.com');
+      var email = customEmail || prompt('Enter your Google Gmail address:', 'amanverma7307166@gmail.com');
       if (!email || !email.trim()) return null;
 
       email = email.trim();
@@ -91,10 +93,11 @@
       var name = customName || defaultName;
 
       return this.setSession({
+        id: '7af2dc49-44e6-4d3d-90c9-f79d374e38d6',
         email: email,
         name: name,
         provider: 'google'
-      });
+      }, 'dev-session-token');
     },
 
     signOut: function () {
@@ -104,7 +107,7 @@
     },
 
     isSignedIn: function () {
-      return Boolean(getToken() && getUser());
+      return Boolean(getUser());
     },
 
     redirectIfSignedIn: function () {

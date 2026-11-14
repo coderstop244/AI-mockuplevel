@@ -6,9 +6,9 @@ Commands
 //testing docker redis in docker
 docker run -d -p 6379:6379 --name redis-server redis:alpine
 
-//run celery worker
-In differnet terminal run the celery worker
-celery -A src.tasks.celery_worker.celery_app worker --loglevel=info
+//run celery worker (on Windows use -P solo)
+In different terminal run the celery worker
+celery -A src.tasks.celery_worker.celery_app worker --loglevel=info -P solo
 
 //command to add .env in gitignore
 echo ".env" >> .gitignore

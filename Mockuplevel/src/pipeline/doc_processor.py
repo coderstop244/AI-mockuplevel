@@ -14,9 +14,21 @@ from src.config import settings
 
 _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".tif", ".tiff"}
 
-pytesseract.pytesseract.tesseract_cmd = (
-    r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-)
+import shutil
+
+_tess_candidate = shutil.which("tesseract")
+if not _tess_candidate:
+    for candidate in [
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+        os.path.expanduser(r"~\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"),
+    ]:
+        if os.path.isfile(candidate):
+            _tess_candidate = candidate
+            break
+
+if _tess_candidate:
+    pytesseract.pytesseract.tesseract_cmd = _tess_candidate
 
 class DocumentProcessor:
     """Extract text from PDF and image documents, with OCR fallback."""
